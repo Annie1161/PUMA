@@ -1,0 +1,3 @@
+# Proposal §17: default paths for the MI domain (CLI flags can override)
+annomi_csv: data/AnnoMI-full.csv
+manifest: artifacts/annomi/data_split_manifest.json

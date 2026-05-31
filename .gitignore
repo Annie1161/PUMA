@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+.venv/
+venv/
+env/
+
+# Local data / artifacts
+data/
+artifacts/
+logs/
+runs/
+outputs/
+*.log
+*.jsonl.gz
+
+# Model checkpoints
+*.bin
+*.safetensors
+*.pt
+*.pth
+hf_home/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local secrets
+.env
+.env.*
+*.key
+api_keys.json

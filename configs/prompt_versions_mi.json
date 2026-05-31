@@ -1,0 +1,15 @@
+{
+  "mi_classify_v1": "(removed) legacy; local classify is FEP-only via core.mi_fep_replay + MI_FEP_CLASSIFY_SYSTEM / ablations",
+  "mi_classify_ours_v1": "FEP rollout + MI_FEP_CLASSIFY_SYSTEM (build_fep_mi_classify_messages)",
+  "mi_classify_cami_style_v1": "CAMI_STYLE_SYSTEM (paper-style reference; not used by local FEP runner)",
+  "mi_classify_m3tcm_style_v1": "M3TCM_STYLE_SYSTEM (paper-style reference)",
+  "mi_classify_calm_it_style_v1": "CALM_IT_STYLE_SYSTEM (paper-style reference)",
+  "mi_classify_schema_guided_style_v1": "SCHEMA_GUIDED_STYLE_SYSTEM (paper-style reference)",
+  "mi_classify_ours_no_transition_v1": "FEP rollout with transition off + MI_FEP_CLASSIFY_SYSTEM",
+  "mi_classify_ours_no_planner_v1": "FEP rollout + random planner ablation in build_fep_mi_classify_messages",
+  "mi_classify_ours_no_posterior_v1": "FEP rollout + OURS_NO_POSTERIOR_SYSTEM (gold prev in user block, no q(s) in prompt)",
+  "mi_transition_v1": "TRANSITION_SYSTEM + user_block_transition",
+  "mi_transition_cami_v1": "CAMI-style transition prompt",
+  "frozen_at": "2026-03-31",
+  "source": "02_experiments/src/prompts/mi_annomi/mi_prompts.py"
+}

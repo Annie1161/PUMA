@@ -1,0 +1,3 @@
+# Proposal §17: default paths for the PersonaMem domain
+personas_dir: artifacts/personas
+manifest: artifacts/persona_split_manifest.json
