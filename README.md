@@ -51,7 +51,7 @@ or an OpenAI-compatible HTTP endpoint can be plugged in via the unified client i
     │   ├── DataLoader/
     │   ├── nlgeval/               BLEU / METEOR / ROUGE / CIDEr metrics
     │   ├── scripts/               Data-conversion helpers + HF-server launcher
-    │   └── Trainer/               Optional LoRA fine-tuning (not used in main results)
+    │   └── Trainer/               LoRA fine-tuning
     └── tools/                     Shared infrastructure + simulators + evaluators
         ├── defaults.py            Backbone defaults (single source of truth)
         ├── factory.py             Factory for building clients / agents
