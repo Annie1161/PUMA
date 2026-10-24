@@ -2,7 +2,7 @@ import path_setup  # noqa: F401
 
 import argparse
 
-from tools.defaults import DEFAULT_LLM_CLIENT, DEFAULT_QWEN_HF_MODEL
+from tools.defaults import DEFAULT_MODEL
 
 
 def _str2bool(v):
@@ -22,7 +22,7 @@ def get_args(description='Agent configuration'):
     # data
     parser.add_argument(
         "--dataset",
-        choices=["human", "msc", "cc", "quickeval", "annomi", "cami", "kmi"],
+        choices=["msc", "annomi", "cami", "kmi"],
         default="msc",
         help="Dataset which will be acted.",
     )
@@ -38,7 +38,6 @@ def get_args(description='Agent configuration'):
     )
     parser.add_argument('--data_path', type=str, default='dataset', help='Dataset path.')
     parser.add_argument('--data_name', type=str, default='sequential.json', help='Dataset file name under data_path.')
-    parser.add_argument('--id_set', type=str, default='id_set.json', help='Split of sessions and samples.')
     parser.add_argument('--annomi_init_turns', type=int, default=8, help='Number of patient-doctor pairs for memory warm-up when using annomi_jsonl or dataset annomi.')
     parser.add_argument(
         '--cami_warmup_ratio',
@@ -71,13 +70,14 @@ def get_args(description='Agent configuration'):
     parser.add_argument('--max_user_personas', type=int, default=0, help='Select the latest N user personas.')
     parser.add_argument(
         '--therapist_action_granularity',
-        choices=['coarse', 'fine', 'mi12'],
+        choices=['coarse', 'fine', 'misc17', 'mi12'],
         default='coarse',
         help=(
             'Discrete therapist action label for Persona/Planner JSON: '
             'coarse = AnnoMI main_therapist_behaviour (question, reflection, therapist_input, other); '
             'fine = therapist_action_fine_qualified (e.g. question/open, reflection/simple, …); '
-            'mi12 = 12-class MI vocabulary aligned with dynamic_simulator (open_question, evoke_change_talk, …).'
+            'misc17 = 17-class MISC vocabulary (Open Question, Affirm, …); '
+            'mi12 = legacy alias for misc17.'
         ),
     )
     parser.add_argument(
@@ -121,14 +121,8 @@ def get_args(description='Agent configuration'):
         help='Max extra retries when short-term/long-term persona MACHINE_JSON is invalid.',
     )
 
-    # client setting
-    parser.add_argument('--client', choices=["chatgpt", "chatglm", "qwen_hf", "qwen_local"], default=DEFAULT_LLM_CLIENT, help='Client to use (local HF: qwen_hf / chatglm via tools.qwen_hf_client).')
-    parser.add_argument('--model', type=str, default=DEFAULT_QWEN_HF_MODEL, help='The model name: GPT id for chatgpt; HF id or local path for chatglm/qwen_hf; served model id for qwen_local.')
-    parser.add_argument('--openai_base_url', type=str, default=None, help='OpenAI-compatible base URL for qwen_local, e.g. http://127.0.0.1:8000/v1.')
-    parser.add_argument('--summary_model', type=str, default='default', help='The model for event summary.')   
-    parser.add_argument('--persona_model', type=str, default='default', help='The model for persona extraction.')  
-    parser.add_argument('--generation_model', type=str, default='default', help='The model for response generation.')       
-    parser.add_argument('--planner_model', type=str, default='default', help='The model (LoRA slot Planner) for transition planning p(s\'|s,a).')
+    # Local model settings
+    parser.add_argument('--model', type=str, default=DEFAULT_MODEL, help='Hugging Face model identifier or local model directory.')
     parser.add_argument('--disable_planner', action='store_true', default=False, help='If set, skip TransitionPlanner and omit roll-forward state in patient simulator.')
     parser.add_argument(
         '--planner_no_wm_input',
@@ -149,10 +143,8 @@ def get_args(description='Agent configuration'):
         help='If true, apply a conservative CAMI next-stage calibration to reduce contemplation lock on explicit planning prompts.',
     )
 
-    # ChatGPT setting
-    parser.add_argument('--api_key', type=str, default='Your API Key', help='OpenAI API Key.')
 
-    # ChatGLM setting
+    # Inference limits
     parser.add_argument('--max_input_length', type=int, default=4096, help='The number of maximum size of LLM input.')
     parser.add_argument(
         '--max_output_length',
@@ -231,8 +223,8 @@ def get_args(description='Agent configuration'):
         type=_str2bool,
         default=False,
         help=(
-            'If true, FEPCounselor selects its therapist action via Expected Free Energy (EFE) '
-            'minimization before generating the response. Requires --baseline_mode fep and '
+            'If true, PUMACounselor selects its therapist action via Expected Free Energy (EFE) '
+            'minimization before generating the response. Requires '
             '--disable_planner False. Has no effect on static MSC.py evaluation.'
         ),
     )
@@ -266,23 +258,6 @@ def get_args(description='Agent configuration'):
         ),
     )
     parser.add_argument(
-        '--baseline_mode',
-        choices=['fep', 'cami_state', 'majority_state', 'long_prompt_state',
-                 'base_counselor', 'diir', 'cos', 'cami_te', 'cami_full'],
-        default='fep',
-        help=(
-            'Evaluation mode. fep = full proposed method; '
-            'cami_state = CAMI-style state inference baseline; '
-            'majority_state = global majority-label baseline; '
-            'long_prompt_state = full-history long-prompt state baseline; '
-            'base_counselor = Base counselor (Steenstra 2024): MI prompt only; '
-            'diir = DIIR (Xie 2024): inductive reasoning from AnnoMI demos; '
-            'cos = CoS (Sun 2024b): strategy selection + generation + ranking; '
-            'cami_te = CAMI-TE (Yang 2025): CAMI without topic exploration; '
-            'cami_full = full CAMI STAR framework (Yang 2025).'
-        ),
-    )
-    parser.add_argument(
         '--next_state_eval_mode',
         choices=['auto', 'label', 'alignment', 'off'],
         default='auto',
@@ -307,18 +282,6 @@ def get_args(description='Agent configuration'):
             'R/Q (reflection/question ratio), %%OQ (open questions), %%CR (complex reflections), '
             '%%MIC (MI-consistent), %%TTT (therapist talk time). '
             'Follows Yang et al. (2025) CAMI Section 4.3 + Appendix A.5.'
-        ),
-    )
-    parser.add_argument(
-        '--miti_model',
-        type=str,
-        default='',
-        help=(
-            'Model to use for MITI behavior label classification. '
-            'When non-empty, a dedicated OpenAI-compatible client is created for MITI scoring '
-            'using the same --openai_base_url and --api_key as the main client '
-            '(e.g. "Qwen/Qwen3-32B" served via vLLM). '
-            'When empty (default), reuses the main --client / --model.'
         ),
     )
 
@@ -346,10 +309,10 @@ def get_args(description='Agent configuration'):
     parser.add_argument('--results_file', type=str, default=None, help='Override auto-generated results JSON path.')
     parser.add_argument('--log_file', type=str, default=None, help='Override auto-generated log file path.')
     parser.add_argument(
-        '--baseline_history_max_chars',
+        '--state_history_max_chars',
         type=int,
         default=16000,
-        help='Character cap for baseline history prompts; long-prompt baseline uses all history up to this cap.',
+        help='Character cap for state-inference dialogue history.',
     )
 
     args = parser.parse_args()

@@ -9,8 +9,8 @@ Output: profiles_misc.jsonl (same format + misc_actions field)
 
 Usage:
     python misc_annotator.py \
-        --input_path ../baseline/mi_coaching/CAMI/annotations/profiles.jsonl \
-        --output_path ../baseline/mi_coaching/CAMI/annotations/profiles_misc.jsonl \
+        --input_path data/cami/profiles.jsonl \
+        --output_path data/cami/profiles_misc.jsonl \
         --model Qwen/Qwen3-8B
 """
 
@@ -223,9 +223,9 @@ def annotate_profiles(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MISC annotator for CAMI profiles")
     parser.add_argument("--input_path", type=str,
-                        default="../baseline/mi_coaching/CAMI/annotations/profiles.jsonl")
+                        default="data/cami/profiles.jsonl")
     parser.add_argument("--output_path", type=str,
-                        default="../baseline/mi_coaching/CAMI/annotations/profiles_misc.jsonl")
+                        default="data/cami/profiles_misc.jsonl")
     parser.add_argument("--model", type=str, default="Qwen/Qwen3-8B")
     args = parser.parse_args()
     annotate_profiles(args.input_path, args.output_path, args.model)

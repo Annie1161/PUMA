@@ -15,11 +15,10 @@ FEP-style rolling belief about the client (under the two-step mode this is
    Each turn, the long-term `transition_model_delta` is applied the same way.
 
 In addition: `_latent_mi`, `_observations` / `_transitions` still append items
-from the payload; `_q_turn_state_probs` is updated at the end of every
-`_apply_payload` to the 3-state distribution synthesized from **this turn's**
-short-term inference -- so before the **next** turn's short-term LLM call, the
-value is the **previous turn's** short-term estimate (uniform prior on the first
-turn).
+from the payload; `_q_turn_state_probs` is committed at the end of every
+`_apply_payload`. It contains the resolved state distribution when a fixed state
+or fusion resolver is supplied, otherwise a distribution synthesized from the
+short-term inference. The initial distribution is uniform.
 
 The single-step JSON mode (`--persona_single_step`) keeps the legacy one-shot
 approximation; the two-step mode is the default.
@@ -28,11 +27,13 @@ approximation; the two-step mode is the default.
 from __future__ import annotations
 
 import json
+import math
 import re
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.persona_machine_json import (
+    ShortTermMachineParsed,
     apply_two_step_machine_json_to_personas,
     clamp_conf,
     estimate_q_turn_state_probs_from_payload,
@@ -225,7 +226,7 @@ class Personas:
         self._transition_model_block: List[Dict[str, str]] = self._build_cold_start_transition_rules()
         self._history_buffer: List[Dict[str, Any]] = []
         self._last_inference_entropy: float = 0.5
-        # Updated at the end of `_apply_payload`; before the next turn's short-term LLM call inside `traits_update`, this equals the previous turn's short-term 3-state estimate.
+        # The committed state distribution from the latest completed update.
         self._q_turn_state_probs: Dict[str, float] = {
             k: 1.0 / len(self._patient_talk_types) for k in self._patient_talk_types
         }
@@ -337,7 +338,7 @@ class Personas:
         return text
 
     def _build_full_history_text(self, patient_utt: str, therapist_utt: str = "") -> str:
-        """Build full dialogue history text (same format as long_prompt baseline)."""
+        """Build dialogue history for the PUMA state head."""
         history_lines: list = []
         for item in self._history_buffer:
             t_utt = str(item.get("a_prev_utt_excerpt", "") or "").strip()
@@ -350,7 +351,7 @@ class Personas:
             history_lines.append(f"Patient: {patient_utt}")
         if therapist_utt:
             history_lines.append(f"Doctor: {therapist_utt}")
-        max_chars = int(getattr(self.args, "baseline_history_max_chars", 0) or 0) or 30000
+        max_chars = int(getattr(self.args, "state_history_max_chars", 0) or 0) or 30000
         history_text = "\n".join(history_lines)
         if len(history_text) > max_chars:
             history_text = history_text[-max_chars:]
@@ -373,10 +374,9 @@ class Personas:
         return label if label in CAMI_STAGE_TYPES else None
 
     def _observation_focused_state_call(self, patient_utt: str, therapist_utt: str = "") -> Optional[Dict[str, float]]:
-        """Two-step state inference:
-        Step 1: Long-prompt style classification (full history, current_state only)
-        Step 2: Refinement — give LLM its Step 1 prediction + the prior from last turn,
-                ask it to decide whether to keep or revise.
+        """Infer readiness from dialogue, without applying the planner prior.
+
+        The caller can resolve this observation with the prior before rule updates.
         """
         if tuple(self._patient_talk_types) != CAMI_STAGE_TYPES:
             return None
@@ -410,10 +410,7 @@ class Personas:
         if step1_label is None:
             return None
 
-        # ---- No Step 2: use Step1 result directly ----
-        # Planner prior has been shown to introduce contemplation bias
-        # (transition rules learned on biased labels → planner always predicts
-        # contemplation → preparation recall collapses). Pure long-prompt is better.
+        # Return observation-only probabilities; state resolution is a separate step.
         if self.logger:
             self._persona_log_info(
                 "[Persona] obs_state: using step1=%s directly (no prior refinement)",
@@ -485,6 +482,9 @@ class Personas:
         patient_utterance: str,
         therapist_utterance: str,
         therapist_action: Optional[str] = None,
+        *,
+        state_override: Optional[str] = None,
+        state_resolver: Optional[Callable[[str, Dict[str, float]], Dict[str, float]]] = None,
     ) -> Tuple[str, str, str]:
         """
         One-step update for the current dialogue turn (aligned with the "P_i then D_i" order used by MSC).
@@ -496,25 +496,37 @@ class Personas:
         Default: (1) short-term rolling `_q_st_text` (per-turn revision on top of the previous narrative) + `latent_mi`;
         (2) long-term p(o|s) and p(s'|s,a) text blocks incrementally merged (slow-changing) + current therapist-utterance label / transition.
         If `args.persona_single_step` is set: a single legacy-JSON call.
+        Explicit state control uses the split update path: `state_override` skips
+        state inference, and `state_resolver` runs after inference but before rule
+        updates. A fixed override takes precedence over the resolver.
         """
+        if state_override is not None:
+            state_override = str(state_override).strip().lower()
+            if state_override not in self._patient_talk_types:
+                raise ValueError(f"Invalid fixed state {state_override!r}; expected one of {self._patient_talk_types}.")
         action_override = _optional_therapist_action_str(therapist_action)
+        use_legacy_update = (
+            getattr(self.args, "persona_single_step", False)
+            and state_override is None and state_resolver is None
+        )
         self._persona_log_info(
             "[Persona] traits_update start mode=%s patient_chars=%d therapist_chars=%d "
             "prior_q_chars=%d a_prev=%s action_override=%s",
-            "legacy_single" if getattr(self.args, "persona_single_step", False) else "two_step_fep",
+            "legacy_single" if use_legacy_update else "two_step_fep",
             len(patient_utterance or ""),
             len(therapist_utterance or ""),
             len(self._render_q_st_text()),
             self._prev_therapist_action,
             action_override or "(none)",
         )
-        if getattr(self.args, "persona_single_step", False):
+        if use_legacy_update:
             payload = self._infer_legacy_single_json(
                 patient_utterance, therapist_utterance, action_override=action_override
             )
         else:
             payload = self._infer_two_step_fep(
-                patient_utterance, therapist_utterance, action_override=action_override
+                patient_utterance, therapist_utterance, action_override=action_override,
+                state_override=state_override, state_resolver=state_resolver,
             )
         self._apply_payload(payload, patient_utterance, therapist_utterance)
         self._persona_log_info(
@@ -621,6 +633,9 @@ class Personas:
         patient_utt: str,
         therapist_utt: str,
         action_override: Optional[str] = None,
+        *,
+        state_override: Optional[str] = None,
+        state_resolver: Optional[Callable[[str, Dict[str, float]], Dict[str, float]]] = None,
     ) -> Dict[str, Any]:
         # The short-term belief accumulated before this turn's update (full text stored in `_q_st_text`); the prompt uses a truncated version to control tokens.
         prior_q_full = self._render_q_st_text().strip()
@@ -629,36 +644,27 @@ class Personas:
         if _cap > 0 and len(prior_for_prompt) > _cap:
             prior_for_prompt = "(prior truncated)\n" + prior_for_prompt[-_cap:]
 
-        # --- Skip q filter when observation_focused_state is enabled ---
-        # The two-step LLM call (Step1 long-prompt + Step2 prior refinement)
-        # in _observation_focused_state_call replaces q filter's state classification.
-        # We only need p filter for observation/transition rule updates.
+        # An externally inferred or fixed state does not need another q call.
         skip_q_filter = bool(
             getattr(self.args, "observation_focused_state", False)
         )
 
-        if skip_q_filter:
-            # State is already set by MSC (long-prompt + optional prior refinement)
-            # via personas._latent_mi["client_talk_type"] BEFORE calling traits_update.
-            # Do NOT call _observation_focused_state_call here — it would overwrite
-            # the correct state with a worse prediction (truncated history).
-            # Just provide a stub for p filter.
-            current_label = self._latent_mi.get("client_talk_type", self._latent_default_label)
-            self._q_turn_state_probs = {current_label: 0.9}
+        if state_override is not None or skip_q_filter:
+            current_label = state_override or self._latent_mi.get("client_talk_type", self._latent_default_label)
             q_text = (f"Current patient readiness stage: {current_label}. "
                       f"Patient said: {(patient_utt or '')[:200]}")
-            st = type("_StubST", (), {
-                "client_talk_type": current_label,
-                "inference_entropy": 0.0,
-                "q_manifold": q_text,
-                "machine_json": {"client_talk_type": current_label, "inference_entropy": 0.0},
-                "observation": {"state_pattern": q_text, "confidence": 0.5},
-                "q_delta_normalized": {},
-                "turn_body_for_q_roll": "",
-            })()
+            st = ShortTermMachineParsed(
+                client_talk_type=current_label,
+                inference_entropy=0.0,
+                q_manifold=q_text,
+                machine_json={"client_talk_type": current_label, "inference_entropy": 0.0},
+                observation={"state_pattern": q_text, "confidence": 0.5},
+                q_delta_normalized={},
+                turn_body_for_q_roll="",
+            )
             if self.logger:
                 self._persona_log_info(
-                    "[Persona] short_term_q SKIPPED, state=%s set by two-step LLM (p filter will use this)",
+                    "[Persona] short_term_q skipped; supplied state=%s",
                     current_label,
                 )
         else:
@@ -742,6 +748,39 @@ class Personas:
                 else st.q_manifold.replace("\n", " "),
             )
 
+        resolved_probs = None
+        if state_override is not None:
+            resolved_probs = {label: float(label == state_override) for label in self._patient_talk_types}
+        elif state_resolver is not None:
+            observation_probs = estimate_q_turn_state_probs_from_payload(
+                {"latent_mi": {"client_talk_type": st.client_talk_type},
+                 "observation": st.observation, "inference_entropy": st.inference_entropy},
+                patient_talk_types=tuple(self._patient_talk_types),
+            )
+            resolved_probs = self._normalize_state_probabilities(
+                state_resolver(st.client_talk_type, observation_probs)
+            )
+
+        if resolved_probs is not None:
+            resolved_probs = self._normalize_state_probabilities(resolved_probs)
+            label = max(resolved_probs, key=resolved_probs.get)
+            entropy = -sum(p * math.log(p) for p in resolved_probs.values() if p > 0)
+            entropy /= math.log(len(self._patient_talk_types))
+            resolved_text = (
+                f"Resolved current patient state: {label}. Use this state for observation and transition rule updates.\n"
+                f"State probabilities: {json.dumps(resolved_probs)}\n"
+                f"Observation inference before state resolution:\n{st.q_manifold}"
+            )
+            st = replace(
+                st, client_talk_type=label, inference_entropy=entropy,
+                machine_json={**st.machine_json, "client_talk_type": label, "inference_entropy": entropy},
+                q_manifold=resolved_text,
+                observation=(
+                    {**st.observation, "state_pattern": f"Current patient readiness stage: {label}. Patient said: {(patient_utt or '')[:200]}"}
+                    if state_override is not None or skip_q_filter else st.observation
+                ),
+            )
+
         max_h = max(1, int(getattr(self.args, "persona_history_max", 6) or 6))
         history_json = json.dumps(self._history_buffer[-max_h:], ensure_ascii=False)
 
@@ -805,7 +844,7 @@ class Personas:
                 if lt.machine_json:
                     break
 
-        return apply_two_step_machine_json_to_personas(
+        payload = apply_two_step_machine_json_to_personas(
             self,
             st,
             lt,
@@ -815,6 +854,18 @@ class Personas:
             max_history=max_h,
             logger=self.logger,
         )
+        if resolved_probs is not None:
+            payload["resolved_state_probs"] = resolved_probs
+        return payload
+
+    def _normalize_state_probabilities(self, probabilities: Dict[str, float]) -> Dict[str, float]:
+        if not isinstance(probabilities, dict) or set(probabilities) - set(self._patient_talk_types):
+            raise ValueError("State probabilities must use the configured state labels.")
+        probs = {label: float(probabilities.get(label, 0.0)) for label in self._patient_talk_types}
+        total = sum(probs.values())
+        if any(not math.isfinite(p) or p < 0 for p in probs.values()) or not math.isfinite(total) or total <= 0:
+            raise ValueError("State probabilities must be finite, nonnegative, and have a positive sum.")
+        return {label: p / total for label, p in probs.items()}
 
     def _fallback_payload(self, patient_utt: str, therapist_utt: str) -> Dict[str, Any]:
         if self.logger:
@@ -850,11 +901,8 @@ class Personas:
         self._apply_observation_and_latent_from_patient(data)
         self._apply_transition_from_therapist_action(data, patient_utt, therapist_utt)
 
-        # --- Observation-focused state override ---
-        # When observation_focused_state=True, the two-step classification
-        # (Step1 long-prompt + Step2 prior refinement) already ran in
-        # _infer_two_step_fep BEFORE p filter. State is already set.
-        # No action needed here.
+        # State resolution happens before rule inference; applying the payload
+        # commits that same state and its probabilities.
 
         if self.logger:
             obs = data.get("observation") or {}
@@ -896,10 +944,13 @@ class Personas:
                 if vv in self._patient_talk_types:
                     self._latent_mi["client_talk_type"] = vv
 
-        # The 3-state q(s) distribution at the end of this turn's short-term inference; until the next turn's inference begins, this serves as the "previous-turn short-term estimate".
-        self._q_turn_state_probs = estimate_q_turn_state_probs_from_payload(
-            data, patient_talk_types=tuple(self._patient_talk_types)
-        )
+        # Preserve the resolved posterior rather than reconstructing it from its label.
+        if "resolved_state_probs" in data:
+            self._q_turn_state_probs = self._normalize_state_probabilities(data["resolved_state_probs"])
+        else:
+            self._q_turn_state_probs = estimate_q_turn_state_probs_from_payload(
+                data, patient_talk_types=tuple(self._patient_talk_types)
+            )
 
     def _apply_transition_from_therapist_action(
         self,
@@ -980,7 +1031,7 @@ class Personas:
     # --- Optional: for debugging or downstream modules to read the structured state ---
     @property
     def q_turn_state_probs(self) -> Dict[str, float]:
-        """A copy of the previous-turn short-term 3-state distribution after it was committed (refreshed at the end of every `_apply_payload`)."""
+        """A copy of the state distribution committed by the latest update."""
         return dict(self._q_turn_state_probs)
 
     def snapshot(self) -> Dict[str, Any]:

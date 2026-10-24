@@ -5,12 +5,11 @@ import numpy as np
 from typing import List, Optional, Tuple
 
 import path_setup  # noqa: F401
-from tools import build_llm_client
-from tools.therapist_action import normalize_therapist_action
+from counselor import LocalModel
+from tools.persona_machine_json import normalize_therapist_action
 
 from nltk.util import ngrams
 from nlgeval import calc_nlg_metrics
-from baseline.state_predictors import build_state_predictor
 from Module.EventMemory import EventMemory
 from Module.Personas import Personas, therapist_action_vocab
 
@@ -18,8 +17,6 @@ from Module.Personas import Personas, therapist_action_vocab
 MI_TALK_TYPES = ("neutral", "change", "sustain")
 CAMI_STAGE_TYPES = ("precontemplation", "contemplation", "preparation")
 
-# Counselor agent baseline modes (generate counselor responses, not state predictions)
-COUNSELOR_AGENT_MODES = ("base_counselor", "diir", "cos", "cami_te", "cami_full")
 from Module.Generator import Generator
 from Module.Planner import TransitionPlanner
 from Module.prompts import STATE_ALIGNMENT_SYS, format_state_alignment_user
@@ -454,21 +451,7 @@ class MSC():
         self._annomi_mode = args.dataset in ("annomi", "kmi") or getattr(args, "data_format", "msc") == "annomi_jsonl"
         self._cami_mode = args.dataset == "cami" or getattr(args, "data_format", "msc") == "cami_jsonl"
         self._jsonl_mi_mode = self._annomi_mode or self._cami_mode
-        self._baseline_mode = getattr(args, "baseline_mode", "fep")
-
-        if self._baseline_mode in ("majority_state", "cami_state"):
-            self.client = None
-        else:
-            if args.client in ("chatglm", "qwen_hf"):
-                lora_map = {
-                    "EventSummary": args.summary_model,
-                    "PersonaExtraction": args.persona_model,
-                    "ResponseGenerator": args.generation_model,
-                    "Planner": args.planner_model,
-                }
-                self.client = build_llm_client(args, logger, lora_map=lora_map)
-            else:
-                self.client = build_llm_client(args, logger, lora_map=None)
+        self.client = LocalModel(args)
 
         self.usr_name = args.usr_name
         self.agent_name = args.agent_name
@@ -517,7 +500,6 @@ class MSC():
             self.original_sample_ids = list(range(len(self.dataset)))
 
         self.logger.info(f"Total {len(self.dataset)} samples to be evaluated.")
-        self.logger.info("Evaluation baseline mode: %s", self._baseline_mode)
 
         self.relevance_memory_number = args.relevance_memory_number
         self.context_memory_number = args.context_memory_number
@@ -534,35 +516,13 @@ class MSC():
         # Confusion data for Macro-F1 computation
         self._confusion_pairs: List[Tuple[str, str]] = []  # (pred, gold)
 
-        self._majority_state_label = self._compute_global_majority_state()
-        self._baseline_details = {}
 
         # MITI Behavior Scores tracking (enabled by --miti_behavior_scores)
         self._miti_enabled = bool(getattr(args, "miti_behavior_scores", False))
         self._miti_per_sample = []  # list of per-sample score dicts
         if self._miti_enabled:
-            miti_model = (getattr(args, "miti_model", "") or "").strip()
-            if miti_model:
-                # Dedicated OpenAI-compatible client for MITI scoring (e.g. Qwen/Qwen3-32B via vLLM)
-                from tools.openai_client import OpenAIChatClient
-                miti_client = OpenAIChatClient(
-                    miti_model,
-                    logger,
-                    args,
-                    openai_base_url=getattr(args, "openai_base_url", None),
-                )
-                self._miti_scorer = MITIScorer(miti_client, self.logger)
-                self.logger.info(
-                    "[MITI] MITI Behavior Scores enabled — dedicated client model=%s base_url=%s",
-                    miti_model,
-                    getattr(args, "openai_base_url", None),
-                )
-            elif self.client is not None:
-                self._miti_scorer = MITIScorer(self.client, self.logger)
-                self.logger.info("[MITI] MITI Behavior Scores enabled — reusing main client for classification.")
-            else:
-                self._miti_enabled = False
-                self.logger.warning("[MITI] miti_behavior_scores=True but no LLM client available; disabling.")
+            self._miti_scorer = MITIScorer(self.client, self.logger)
+            self.logger.info("[MITI] Using the local model for behavior classification.")
 
     def _static_log_info(self, msg, *args):
         if self._concise_static_logging:
@@ -570,27 +530,6 @@ class MSC():
         else:
             self.logger.info(msg, *args)
 
-    def _compute_global_majority_state(self):
-        counts = {k: 0 for k in self._state_labels}
-        for sample in self.dataset:
-            for session in sample:
-                for dial in session.get("dialog", []):
-                    label = dial.get(self._state_key)
-                    if label is not None:
-                        s = str(label).strip().lower()
-                        if s in self._state_labels:
-                            counts[s] += 1
-
-        best = self._state_labels[0]
-        best_count = -1
-        for label in self._state_labels:
-            if counts[label] > best_count:
-                best = label
-                best_count = counts[label]
-        self.logger.info(
-            "Global majority %s=%s counts=%s", self._state_key, best, counts
-        )
-        return best
 
     def _build_results_payload(self, all_samples_score, all_sample_avg, min_s, max_s):
         samples_payload = []
@@ -642,15 +581,13 @@ class MSC():
             "miti_behavior_scores": miti_aggregate,
             "run": {
                 "dataset": self.args.dataset,
-                "baseline_mode": getattr(self.args, "baseline_mode", "fep"),
+                "method": "puma",
                 "data_format": getattr(self.args, "data_format", None),
                 "test_num": self.args.test_num,
                 "sample_ids": getattr(self.args, "sample_ids", ""),
                 "build_times": self.args.build_times,
                 "disable_planner": bool(getattr(self.args, "disable_planner", False)),
                 "next_state_eval_mode": getattr(self.args, "next_state_eval_mode", "auto"),
-                "majority_state_label": self._majority_state_label,
-                "baseline_details": self._baseline_details,
                 "log_file": getattr(self.args, "log_file", None),
                 "results_file": getattr(self.args, "results_file", None),
                 "metric_names": list(METRIC_NAMES),
@@ -763,28 +700,18 @@ class MSC():
 
                 # Use long-prompt predictor for warmup state (untruncated history)
                 if self._state_label_space in ("cami_stage", "mi_talk"):
-                    if not hasattr(self, "_lp_predictor"):
-                        self._lp_predictor = self._build_longprompt_predictor()
                     if not hasattr(self, "_lp_warmup_history") or not hasattr(self, "_lp_warmup_sample_id") or self._lp_warmup_sample_id != sample_id:
                         self._lp_warmup_history = []
                         self._lp_warmup_sample_id = sample_id
                     if self._state_label_space == "mi_talk":
-                        if not hasattr(self, "_cami_mi_predictor"):
-                            from baseline.state_predictors import CAMIStateAndClientPredictor
-                            self._cami_mi_predictor = CAMIStateAndClientPredictor(self.args, self.logger)
-                        _wu_conv = list(self._lp_warmup_history) + [f"{self.usr_name}: {dial['SPEAKER_1']}"]
-                        warmup_label = self._cami_mi_predictor._infer_cami_stage(_wu_conv)
-                        warmup_label = (warmup_label or "neutral").strip().lower()
-                        if warmup_label and warmup_label in self._state_labels:
-                            personas._latent_mi["client_talk_type"] = warmup_label
-                    else:
-                        lp_pred = self._lp_predictor.predict(
-                            self._lp_warmup_history,
-                            dial["SPEAKER_1"],
-                            dial["SPEAKER_2"],
+                        warmup_label = self._cot_classify_mi_talk(
+                            self._lp_warmup_history, dial["SPEAKER_1"], dial["SPEAKER_2"],
                         )
-                        if lp_pred.current_state and lp_pred.current_state in self._state_labels:
-                            personas._latent_mi["client_talk_type"] = lp_pred.current_state
+                    else:
+                        probs = personas._observation_focused_state_call(dial["SPEAKER_1"])
+                        warmup_label = max(probs, key=probs.get) if probs else None
+                    if warmup_label in self._state_labels:
+                        personas._latent_mi["client_talk_type"] = warmup_label
                     self._lp_warmup_history.append(f"{self.usr_name}: {dial['SPEAKER_1']}")
                     self._lp_warmup_history.append(f"{self.agent_name}: {dial['SPEAKER_2']}")
 
@@ -831,23 +758,6 @@ class MSC():
 
         return memory_bank, personas, response_generator, planner
 
-    def baseline_history_init(self, sample_id):
-        history = []
-        for dial in self.dataset[sample_id][0]["dialog"]:
-            history.append(f"{self.usr_name}: {dial['SPEAKER_1']}")
-            history.append(f"{self.agent_name}: {dial['SPEAKER_2']}")
-        self._dialog_turn = len(self.dataset[sample_id][0]["dialog"])
-        return history
-
-    def build_baseline_predictor(self):
-        predictor = build_state_predictor(
-            self.args,
-            self.logger,
-            client=self.client,
-            majority_label=self._majority_state_label,
-        )
-        self._baseline_details = predictor.describe()
-        return predictor
 
     def compute_scores(self, response, calculate_dist_n, reference_text):
         metrics_dict = calc_nlg_metrics([response], [reference_text], "response")
@@ -961,13 +871,6 @@ class MSC():
             return None, resolved_mode
         return float(predicted_next_state == next_gold_state), resolved_mode
 
-    def _build_longprompt_predictor(self):
-        """Build a LongPromptStatePredictor for observation_focused_state mode."""
-        from baseline.state_predictors import LongPromptStatePredictor
-        return LongPromptStatePredictor(
-            self.client, self.args, self.logger,
-            state_label_space=self._state_label_space,
-        )
 
     _COT_MI_TALK_PROMPT = (
         "During the Motivational Interviewing counseling conversation, the client's utterances "
@@ -988,12 +891,12 @@ class MSC():
     )
 
     def _cot_classify_mi_talk(self, history_before, patient_utt, therapist_utt):
-        """CoT-based mi_talk classification (CAMI-style reasoning, better than strict JSON).
+        """MI talk-type classification from dialogue context.
         Only includes patient utterance (not doctor response) to avoid bias."""
         full = list(history_before) + [
             f"{self.usr_name}: {patient_utt}",
         ]
-        max_chars = int(getattr(self.args, "baseline_history_max_chars", 16000) or 16000)
+        max_chars = int(getattr(self.args, "state_history_max_chars", 16000) or 16000)
         conv_text = "\n".join(
             s.replace(self.usr_name + ":", "- Client:").replace(self.agent_name + ":", "- Counselor:")
             for s in full
@@ -1109,9 +1012,7 @@ class MSC():
             )
 
             if use_longprompt_q:
-                # q = long-prompt (full untruncated history, same as baseline)
-                if not hasattr(self, "_lp_predictor"):
-                    self._lp_predictor = self._build_longprompt_predictor()
+                # PUMA state head uses the local inference implementation.
                 if not hasattr(self, "_lp_history") or self._lp_sample_id != sample_id:
                     # Reset history for each new sample (avoid cross-sample contamination)
                     self._lp_sample_id = sample_id
@@ -1120,25 +1021,14 @@ class MSC():
                         self._lp_history.append(f"{self.usr_name}: {d['SPEAKER_1']}")
                         self._lp_history.append(f"{self.agent_name}: {d['SPEAKER_2']}")
 
-                # Step 1: state classification
-                # For mi_talk: use CoT prompt (CAMI-style reasoning) — much better than strict JSON
-                # For cami_stage: keep original LP predictor
+                # Step 1: state classification using the local PUMA state head.
                 if self._state_label_space == "mi_talk":
-                    if not hasattr(self, "_cami_mi_predictor"):
-                        from baseline.state_predictors import CAMIStateAndClientPredictor
-                        self._cami_mi_predictor = CAMIStateAndClientPredictor(self.args, self.logger)
-                    _cami_conv = list(self._lp_history) + [f"{self.usr_name}: {dial['SPEAKER_1']}"]
-                    lp_label = self._cami_mi_predictor._infer_cami_stage(_cami_conv)
-                    lp_label = (lp_label or "neutral").strip().lower()
-                    if lp_label not in self._state_labels:
-                        lp_label = "neutral"
-                else:
-                    lp_pred = self._lp_predictor.predict(
-                        self._lp_history,
-                        dial["SPEAKER_1"],
-                        dial["SPEAKER_2"],
+                    lp_label = self._cot_classify_mi_talk(
+                        self._lp_history, dial["SPEAKER_1"], dial["SPEAKER_2"],
                     )
-                    lp_label = lp_pred.current_state
+                else:
+                    probs = personas._observation_focused_state_call(dial["SPEAKER_1"])
+                    lp_label = max(probs, key=probs.get) if probs else None
 
                 # Step 2: planner prior refinement (only when prior is available and disagrees)
                 planner_prior = personas._planner_prior
@@ -1424,197 +1314,6 @@ class MSC():
 
         return avg_score, memory_bank, personas, response_generator, planner
 
-    def interative_eval_baseline(self, sample_id, session_num, history, predictor, args,
-                                  miti_scorer=None):
-        dialog = self.dataset[sample_id][session_num]["dialog"]
-        n_dialog = len(dialog)
-
-        sum_score = np.zeros(len(METRIC_NAMES))
-        count_score = np.zeros(len(METRIC_NAMES))
-
-        # Pick normalization function based on state label space
-        norm_func = _normalize_cami_stage if self._state_label_space == "cami_stage" else _normalize_mi_talk_type
-
-        for idx, dial in enumerate(dialog):
-            next_patient = dialog[idx + 1]["SPEAKER_1"] if idx + 1 < n_dialog else None
-            next_gold_state = (
-                norm_func(dialog[idx + 1].get(self._state_key))
-                if idx + 1 < n_dialog
-                else None
-            )
-            current_gold_state = norm_func(dial.get(self._state_key))
-
-            pred = predictor.predict(
-                history,
-                dial["SPEAKER_1"],
-                dial["SPEAKER_2"],
-            )
-
-            if current_gold_state is not None and pred.current_state is not None:
-                sum_score[8] += float(pred.current_state == current_gold_state)
-                count_score[8] += 1
-                self._confusion_pairs.append((pred.current_state, current_gold_state))
-
-            next_state_metric, next_mode = self.eval_next_state_label_metric(
-                pred.next_state,
-                next_gold_state,
-            )
-            if next_state_metric is not None:
-                sum_score[9] += next_state_metric
-                count_score[9] += 1
-
-            if next_patient is not None and pred.generated_response:
-                utter_score = self.compute_scores(pred.generated_response, self.calculate_dist_n, next_patient)
-                sum_score[:8] += utter_score
-                count_score[:8] += 1
-
-            self.logger.info(
-                "[Baseline:%s] sample=%s session=%s turn=%s doctor=%s patient=%s current_pred=%s current_gold=%s next_pred=%s next_gold=%s next_mode=%s generated=%s",
-                self._baseline_mode,
-                sample_id,
-                session_num,
-                idx,
-                (dial["SPEAKER_2"] or "")[:120].replace("\n", " "),
-                (dial["SPEAKER_1"] or "")[:120].replace("\n", " "),
-                pred.current_state,
-                current_gold_state,
-                pred.next_state,
-                next_gold_state,
-                next_mode,
-                "yes" if pred.generated_response else "no",
-            )
-
-            # MITI: classify this counselor utterance and update word counts
-            if miti_scorer is not None:
-                miti_label = miti_scorer.add_turn(dial["SPEAKER_2"], dial["SPEAKER_1"])
-                self.logger.debug(
-                    "[MITI] turn=%s counselor_label=%s utt=%r",
-                    idx, miti_label, (dial["SPEAKER_2"] or "")[:60],
-                )
-
-            history.append(f"{self.usr_name}: {dial['SPEAKER_1']}")
-            history.append(f"{self.agent_name}: {dial['SPEAKER_2']}")
-            self._dialog_turn += 1
-
-        avg_score = np.full(len(METRIC_NAMES), np.nan)
-        np.divide(sum_score, count_score, out=avg_score, where=count_score > 0)
-        return avg_score, history, predictor
-
-    # ------------------------------------------------------------------
-    # Counselor Agent baseline evaluation (Base / DIIR / CoS / CAMI-full)
-    # ------------------------------------------------------------------
-
-    def _build_counselor_agent(self, mode: str):
-        """
-        Factory: build a counselor agent for the given baseline mode.
-        All agents share the same interface: receive(utterance) / reply().
-        """
-        import os
-        os.environ["FEP_LLM_CLIENT"] = getattr(self.args, "client", "qwen_hf")
-        os.environ["FEP_LLM_MODEL"] = getattr(self.args, "model", "")
-        os.environ["FEP_GPU"] = str(getattr(self.args, "gpus", "0"))
-
-        # Inject existing LLM client so baseline counselors reuse it
-        # (avoids loading a second model copy — critical for large models)
-        from baseline.mi_coaching.CAMI.agents import llm_client as cami_llm
-        if hasattr(self, "client") and self.client is not None:
-            cami_llm.set_llm_client(self.client)
-        else:
-            cami_llm.reset_llm_client()
-
-        goal = "reducing risky behavior"
-        behavior = "risky behavior"
-        model = getattr(self.args, "model", "")
-
-        if mode == "base_counselor":
-            from baseline.mi_coaching.CAMI.agents.counselor_baselines import BaseCounselor
-            return BaseCounselor(goal=goal, behavior=behavior, model=model)
-        elif mode == "diir":
-            from baseline.mi_coaching.CAMI.agents.counselor_baselines import DIIRCounselor
-            annomi_path = getattr(self, "_raw_data_path", "")
-            return DIIRCounselor(
-                goal=goal, behavior=behavior, model=model,
-                annomi_jsonl_path=annomi_path,
-                exclude_transcript_ids=None,  # TODO: pass test-set transcript IDs
-            )
-        elif mode == "cos":
-            from baseline.mi_coaching.CAMI.agents.counselor_baselines import CoSCounselor
-            return CoSCounselor(goal=goal, behavior=behavior, model=model)
-        elif mode == "cami_te":
-            from baseline.mi_coaching.CAMI.agents.counselor_baselines import CAMITECounselor
-            return CAMITECounselor(goal=goal, behavior=behavior, model=model)
-        elif mode == "cami_full":
-            from baseline.mi_coaching.CAMI.agents.counselor import CAMI as CAMICounselor
-            return CAMICounselor(goal=goal, behavior=behavior, model=model)
-        else:
-            raise ValueError(f"Unknown counselor agent mode: {mode}")
-
-    def interative_eval_counselor(self, sample_id, session_num, counselor_agent, args,
-                                  miti_scorer=None):
-        """
-        Counselor agent evaluation: generate counselor responses turn-by-turn,
-        compare with ground-truth counselor utterances (NLG metrics),
-        and optionally score with MITI.
-
-        At each turn:
-          1. Feed client utterance to counselor agent via receive()
-          2. Agent generates counselor response via reply()
-          3. Compare generated response with ground-truth SPEAKER_2 (NLG)
-          4. MITI-classify the generated response
-        """
-        dialog = self.dataset[sample_id][session_num]["dialog"]
-        n_dialog = len(dialog)
-
-        sum_score = np.zeros(len(METRIC_NAMES))
-        count_score = np.zeros(len(METRIC_NAMES))
-
-        for idx, dial in enumerate(dialog):
-            patient_utt = dial["SPEAKER_1"]
-            gold_counselor_utt = dial["SPEAKER_2"]
-
-            # Step 1: Feed client utterance to counselor agent
-            counselor_agent.receive(f"Client: {patient_utt}")
-
-            # Step 2: Generate counselor response
-            raw_reply = counselor_agent.reply()
-            # Strip metadata prefix: "[Base Counselor] Counselor: ..." -> "..."
-            generated = raw_reply
-            if "] " in generated:
-                generated = generated.split("] ", 1)[1]
-            if generated.startswith("Counselor: "):
-                generated = generated[len("Counselor: "):]
-            generated = generated.strip()
-
-            # Step 3: NLG metrics (generated counselor vs ground-truth counselor)
-            if generated and gold_counselor_utt:
-                nlg_score = self.compute_scores(generated, self.calculate_dist_n, gold_counselor_utt)
-                sum_score[:8] += nlg_score
-                count_score[:8] += 1
-
-            # Step 4: MITI scoring on generated response
-            if miti_scorer is not None and generated:
-                miti_label = miti_scorer.add_turn(generated, patient_utt)
-                self.logger.debug(
-                    "[Counselor:%s] MITI label=%s for generated=%r",
-                    self._baseline_mode, miti_label, generated[:120],
-                )
-
-            self.logger.info(
-                "[Counselor:%s] sample=%s session=%s turn=%s patient=%s gold_counselor=%s generated=%s",
-                self._baseline_mode,
-                sample_id,
-                session_num,
-                idx,
-                (patient_utt or "")[:120].replace("\n", " "),
-                (gold_counselor_utt or "")[:120].replace("\n", " "),
-                (generated or "")[:120].replace("\n", " "),
-            )
-
-            self._dialog_turn += 1
-
-        avg_score = np.full(len(METRIC_NAMES), np.nan)
-        np.divide(sum_score, count_score, out=avg_score, where=count_score > 0)
-        return avg_score, counselor_agent
 
     def calculate_dist_n(self, text, n):
         words = text.split()
@@ -1636,42 +1335,15 @@ class MSC():
             # MITI: reset scorer for each sample
             if self._miti_enabled:
                 self._miti_scorer.reset()
-            if self._baseline_mode == "fep":
-                self._dialog_turn = 0
-                memory_bank, personas, response_generator, planner = self.memory_bank_init(idx, self.args)
-                for session_num, i in enumerate(range(min_s, max_s)):
-                    score, memory_bank, personas, response_generator, planner = self.interative_eval(
-                        idx, i, memory_bank, personas, response_generator, planner, self.args,
-                        miti_scorer=self._miti_scorer if self._miti_enabled else None,
-                    )
-                    all_sessions_score.append(score)
-                del memory_bank, personas, response_generator, planner
-            elif self._baseline_mode in COUNSELOR_AGENT_MODES:
-                # Counselor agent baselines: generate counselor responses turn-by-turn
-                self._dialog_turn = 0
-                counselor_agent = self._build_counselor_agent(self._baseline_mode)
-                # Warm up with session 0 history (same as other baselines)
-                for dial in self.dataset[idx][0]["dialog"]:
-                    counselor_agent.receive(f"Client: {dial['SPEAKER_1']}")
-                    counselor_agent.conversation.append(f"Counselor: {dial['SPEAKER_2']}")
-                    counselor_agent.messages.append({"role": "assistant", "content": f"Counselor: {dial['SPEAKER_2']}"})
-                    self._dialog_turn += 1
-                for session_num, i in enumerate(range(min_s, max_s)):
-                    score, counselor_agent = self.interative_eval_counselor(
-                        idx, i, counselor_agent, self.args,
-                        miti_scorer=self._miti_scorer if self._miti_enabled else None,
-                    )
-                    all_sessions_score.append(score)
-                del counselor_agent
-            else:
-                history = self.baseline_history_init(idx)
-                predictor = self.build_baseline_predictor()
-                for session_num, i in enumerate(range(min_s, max_s)):
-                    score, history, predictor = self.interative_eval_baseline(
-                        idx, i, history, predictor, self.args,
-                        miti_scorer=self._miti_scorer if self._miti_enabled else None,
-                    )
-                    all_sessions_score.append(score)
+            self._dialog_turn = 0
+            memory_bank, personas, response_generator, planner = self.memory_bank_init(idx, self.args)
+            for session_num, i in enumerate(range(min_s, max_s)):
+                score, memory_bank, personas, response_generator, planner = self.interative_eval(
+                    idx, i, memory_bank, personas, response_generator, planner, self.args,
+                    miti_scorer=self._miti_scorer if self._miti_enabled else None,
+                )
+                all_sessions_score.append(score)
+            del memory_bank, personas, response_generator, planner
             avg_score = _safe_nanmean(all_sessions_score)
             all_sample_avg.append(avg_score)
             self.logger.info(f"Average Sample {idx} Result:")

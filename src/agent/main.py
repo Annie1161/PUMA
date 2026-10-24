@@ -23,7 +23,7 @@ def _sample_tag(args):
 
 
 def _build_run_prefix(args, date):
-    parts = [args.dataset, getattr(args, "baseline_mode", "fep")]
+    parts = [args.dataset, "puma"]
     if getattr(args, "state_label_space", ""):
         parts.append(getattr(args, "state_label_space"))
     parts.append(_sample_tag(args))
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     results_file = f"{run_prefix}.json"
     latest_prefix = "_".join(
         str(part)
-        for part in [args.dataset, getattr(args, "baseline_mode", "fep"), getattr(args, "state_label_space", "")]
+        for part in [args.dataset, "puma", getattr(args, "state_label_space", "")]
         if part
     )
 
@@ -133,9 +133,9 @@ if __name__ == "__main__":
     latest_handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s: %(message)s'))
     logger.addHandler(latest_handler)
     logger.info(
-        "Run start dataset=%s baseline=%s state_label_space=%s sample_tag=%s log=%s results=%s",
+        "Run start dataset=%s method=%s state_label_space=%s sample_tag=%s log=%s results=%s",
         args.dataset,
-        getattr(args, "baseline_mode", "fep"),
+        "puma",
         getattr(args, "state_label_space", ""),
         _sample_tag(args),
         args.log_file,
@@ -143,14 +143,7 @@ if __name__ == "__main__":
     )
 
 
-    if args.dataset in ("msc", "annomi", "cami", "kmi"):
-        from DataLoader.MSC import MSC
+    from DataLoader.MSC import MSC
 
-        msc = MSC(args, logger)
-        msc.evaluation()
-
-    elif args.dataset == "quickeval":
-        from DataLoader.QuickEval import QuickEval
-
-        quick_eval = QuickEval(args, logger)
-        quick_eval.evaluation()
+    evaluation = MSC(args, logger)
+    evaluation.evaluation()

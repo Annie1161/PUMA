@@ -1,224 +1,146 @@
-# PUMA: Prospective User-state Modeling for Action selection
+# PUMA: Prospective User-state Modeling for Action Selection
 
-> **Anonymous code release for a NeurIPS 2026 submission under double-blind review.**
-> Please do not redistribute or attribute. Any identifying metadata (commit history, author email, ...) has been scrubbed.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-PUMA is an LLM agent for motivational-interviewing (MI) style counseling. It treats the client's
-readiness-to-change stage as a latent variable, infers a posterior over that stage at every turn,
-and selects an action that is consistent with both the inferred state and an internal expected-free-energy
-score. The agent is a drop-in replacement for the q-filter inside a standard active-inference dialogue
-loop; the rest of the loop (planner, generator, memory) is unchanged.
+PUMA is a research framework for motivational interviewing (MI) dialogues. It models a
+client's readiness to change, predicts how that state may evolve under different counselor
+actions, and uses expected free energy (EFE) to guide action selection.
 
-The codebase ships:
+The implementation separates **state inference**, **action planning**, and **response
+generation**, with dialogue memory shared across turns. It includes a profile-grounded
+patient simulator and tools for evaluating both state predictions and counseling rollouts.
 
-* the agent itself (state head, planner, generator, memory),
-* the LLM-driven patient simulator used for dynamic evaluation,
-* the offline evaluator over a frozen MI counseling benchmark,
-* a small set of analysis scripts.
+[Getting started](#getting-started) · [Data](#data) · [Evaluation](#evaluation)
 
-It is backbone-agnostic: any Hugging Face causal LM (e.g. Qwen-3 / Llama-3.1 8B instruction-tuned models)
-or an OpenAI-compatible HTTP endpoint can be plugged in via the unified client interface in
-`src/tools/defaults.py`.
+## Overview
 
----
+At each dialogue turn, PUMA:
 
-## Repository layout
+1. Infers a posterior over the client's latent state from the dialogue and persona context.
+2. Uses a transition model to predict the effects of candidate counselor actions.
+3. Selects an action through EFE scoring and generates a natural-language response.
+4. Updates its memory and carries state information into the next turn.
 
-```
-.
-├── README.md
-├── LICENSE
-├── requirements.txt
-├── configs/                       YAML run configs (datasets, prompt versions, domains)
-│   ├── mi_run_config.yaml
-│   ├── run_config_v1.yaml
-│   ├── prompt_versions_mi.json
-│   └── domains/
-└── src/
-    ├── agent/                     The PUMA counseling agent
-    │   ├── main.py                Entry point for offline / interactive runs
-    │   ├── config.py              CLI argument parser
-    │   ├── interactive_cami_text_eval.py   Multi-mode counselor evaluator
-    │   ├── path_setup.py          Adds src/ to sys.path so `tools` is importable
-    │   ├── Module/                Agent modules
-    │   │   ├── Clients.py             LLM client wrappers (OpenAI / HF / Qwen / Llama)
-    │   │   ├── Personas.py            Persona / profile representation
-    │   │   ├── Planner.py             EFE-style action planner
-    │   │   ├── Generator.py           Response generator
-    │   │   ├── EventMemory.py         Long-/short-term memory
-    │   │   ├── MITIScorer.py          MITI-style behavior scoring
-    │   │   └── prompts.py             Prompt templates
-    │   ├── DataLoader/
-    │   ├── nlgeval/               BLEU / METEOR / ROUGE / CIDEr metrics
-    │   ├── scripts/               Data-conversion helpers + HF-server launcher
-    │   └── Trainer/               LoRA fine-tuning
-    └── tools/                     Shared infrastructure + simulators + evaluators
-        ├── defaults.py            Backbone defaults (single source of truth)
-        ├── factory.py             Factory for building clients / agents
-        ├── persona_machine_json.py
-        ├── openai_client.py       OpenAI-compatible client
-        ├── qwen_hf_client.py      Local Hugging Face client
-        ├── therapist_action.py    Action vocabulary
-        ├── dynamic_simulator.py   Dynamic patient closures
-        ├── simple_simulator.py    Simple offline simulator (base)
-        ├── simple_simulator_v7.py Current production simulator
-        ├── simulator_profiles.json
-        ├── eval_simple_sim.py     Dynamic 20-turn rollout evaluator
-        ├── eval_patient_simulator.py
-        ├── eval_simulator_fidelity.py
-        ├── eval_interactive_judge.py
-        ├── misc_annotator.py      MISC behavior labeling
-        └── analyze_ablation.py
-```
+The readiness-stage vocabulary is **precontemplation → contemplation → preparation**.
+The offline evaluator also supports MI talk-type labels: **neutral**, **change**, and
+**sustain**. Observation-focused inference and fusion with the planner prior are configurable;
+select them explicitly when comparing experimental settings.
 
----
+The repository includes:
 
-## Installation
+- **PUMA agent:** persona modeling, transition planning, response generation, and memory.
+- **Patient simulator:** profile-grounded responses, semantic trigger matching, and
+  per-profile action distributions.
+- **Evaluation tools:** offline state evaluation, interactive counseling rollouts, and
+  model-based judging.
+- **Behavior annotation:** MISC counselor-action labels and annotation tools.
 
-PUMA is plain Python with Hugging Face + PyTorch.
+## Getting started
+
+### 1. Set up the project
 
 ```bash
-# Recommended: a clean Python 3.10+ environment
+git clone https://github.com/Annie1161/PUMA.git
+cd PUMA
 python -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
 ```
 
-The pinned versions in `requirements.txt` reflect the main-results environment
-(`torch>=2.4`, `transformers>=4.50`). Newer minor versions usually work.
+[requirements.txt](requirements.txt) is the bundled environment snapshot. It pins
+`torch==1.13.0+cu117` and `transformers==4.37.0`, among other packages. These pins are
+**not a validated Qwen3 environment**. The Qwen3 examples below require a compatible
+PyTorch, Transformers, and CUDA setup; reconcile the snapshot with that setup before
+installing dependencies. The CUDA-specific wheels may require a matching package index.
 
-For GPU inference of an 8B instruction-tuned model in float16, a single
-24 GB-class GPU is sufficient. Static-evaluation runs over the full benchmark
-typically finish on one H100 in a few hours; dynamic evaluation is faster
-because each rollout caps at 20 turns.
-
----
-
-## Datasets
-
-PUMA is evaluated on publicly available MI counseling corpora.
-**Datasets are not redistributed here**; please obtain them from the original sources:
-
-| Dataset | Source | Use |
-|---------|--------|-----|
-| **CAMI** | original release on Hugging Face / GitHub | Main static + dynamic benchmark |
-| **AnnoMI** | original release on Hugging Face | Cross-corpus generalization, demonstration retrieval for some baselines |
-| **MSC** | Multi-Session Chat | Optional long-term-dialogue control |
-
-After downloading, place the transcripts under `data/` (or wherever you like)
-and adjust paths in `configs/mi_run_config.yaml`. Helper scripts to convert
-raw transcripts to the per-profile format expected by the agent live in
-`src/agent/scripts/convert_*_to_profiles.py`.
-
----
-
-## Quick start
-
-### 1. Static state-inference evaluation
-
-Evaluate the agent's posterior over the client's readiness-to-change stage
-on a frozen counseling benchmark.
+For an environment using the bundled pins:
 
 ```bash
-cd src/agent
-python interactive_cami_text_eval.py \
-    --doctor_modes fep \
-    --client_simulator_mode profile_rules \
+python -m pip install -r requirements.txt
+```
+
+The memory module also loads the spaCy English model:
+
+```bash
+python -m spacy download en_core_web_sm
+```
+
+Run subsequent commands from the repository root. Make the shared modules and agent
+entry points importable in the current shell:
+
+```bash
+export PYTHONPATH="$PWD/src:$PWD/src/agent${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+### 2. Choose a local model
+
+Inference uses a local Hugging Face causal language model. Pass `--model` with a
+model identifier or an existing local model directory. The agent defaults to
+`Qwen/Qwen3-0.6B`; the rollout evaluator defaults to `Qwen/Qwen3-8B`.
+The agent default can also be overridden with the `PUMA_MODEL` environment variable.
+
+Local inference is implemented in `src/agent/counselor.py`. Dynamic evaluation shares
+the loaded model between the counselor and patient simulator.
+
+## Data
+
+Prepare datasets separately and follow their original access and license terms. The
+examples below assume this local layout:
+
+```text
+data/
+└── cami/
+    ├── profiles.jsonl
+    └── profiles_misc.jsonl
+```
+
+CAMI profiles use one JSON object per line. Dialogue fields include `speakers`,
+`utterances`, `states`, `talk_types`, and `actions`; persona fields include `Personas`,
+`Beliefs`, `Motivation`, and `Acceptable Plans`. The population statistics additionally
+use `misc_actions` for counselor MISC labels. Keep per-turn arrays aligned.
+
+Provide prepared transcripts and annotated profile files in the formats above.
+
+Pass data paths and evaluation settings explicitly through CLI arguments.
+
+## Evaluation
+
+These examples assume the model environment and data above are available. Start with a
+small profile count before running a full evaluation.
+
+### Offline state evaluation
+
+Evaluate state predictions against a fixed CAMI transcript:
+
+```bash
+python src/agent/main.py \
+    --dataset cami \
+    --data_path data/cami \
+    --data_name profiles.jsonl \
+    --model Qwen/Qwen3-8B \
+    --state_label_space cami_stage \
+    --persona_state_space cami_stage \
+    --observation_focused_state True \
+    --prior_fusion_mode soft_fusion \
     --test_num 5 \
-    --max_turns 12
+    --results_file logs/results/puma_static.json
 ```
 
-Useful flags:
+### Dynamic rollout with patient simulator
 
-* `--doctor_modes fep,cami_text,base_counselor,diir,cos,cami_te,cami_full`
-  — run multiple counselor modes side-by-side in one job.
-* `--test_num -1` — evaluate over all profiles in the configured split.
-* `--annomi_jsonl_path <path>` — required if `diir` is included in the modes
-  (DIIR retrieves demonstrations from an AnnoMI transcript file).
-
-Logs and per-profile JSON results are written under `src/agent/logs/`.
-
-### 2. Dynamic 20-turn rollout
-
-Run multi-turn counseling rollouts against the LLM-driven patient simulator.
+Run counseling rollouts with a maximum of 20 turns per profile:
 
 ```bash
-cd src/tools
-python eval_simple_sim.py \
-    --mode fep \
-    --test_num 29 \
+python src/tools/eval_simple_sim.py \
+    --profiles_misc_path data/cami/profiles_misc.jsonl \
+    --model Qwen/Qwen3-8B \
+    --test_num 5 \
     --max_turns 20 \
-    --backbone qwen3-8b
+    --seed 42 \
+    --prior_fusion_mode soft_fusion \
+    --output_json logs/results/simple_sim_puma_n5.json
 ```
 
-Set `--backbone` to switch between locally hosted causal LMs (the default
-client is `qwen_hf_client`). The same script can score every counselor mode
-sequentially via `--mode all`.
-
-### 3. Optional: launch a local HF inference server
-
-If you prefer to serve the backbone over HTTP instead of loading it in-process:
-
-```bash
-python src/agent/scripts/hf_server.py --model_name Qwen/Qwen3-8B --port 8000
-```
-
-then point `defaults.py` at `openai_client` with `base_url=http://127.0.0.1:8000/v1`.
-
----
-
-## How the agent is organized
-
-The state-inference path is intentionally decoupled from action selection.
-At each turn, conditioned on the running dialogue and a warmup persona summary,
-PUMA invokes a focused LLM call whose only job is to return a posterior
-distribution over readiness-to-change stages. This posterior is then fused
-with the planner's transition prior using an utterance-length-aware
-soft-fusion rule that gives more weight to the planner when the client's
-utterance is too short to be informative. The fused posterior feeds the
-expected-free-energy action selector, which produces the next counselor
-action; a separate generator then realizes that action as natural language.
-
-The implementation lives in:
-
-* `src/agent/Module/Planner.py` — EFE-style planner
-* `src/agent/Module/Personas.py` — persona / warmup summary
-* `src/agent/Module/prompts.py` — focused state-head prompt
-* `src/agent/interactive_cami_text_eval.py` — orchestration
-
-Baselines (`base_counselor`, `cami_text`, `cami_full`, `diir`, `cos`, `cami_te`)
-are implemented in the same evaluator so they share simulator, judge, and
-metric code paths.
-
----
-
-## Reproducibility
-
-All main-result runs use greedy decoding (`do_sample=False`) and deterministic
-CUDA kernels. The relevant flags are wired through `main.py` /
-`interactive_cami_text_eval.py` — see the `torch.use_deterministic_algorithms`
-and `torch.backends.cudnn.deterministic` calls there. The patient simulator
-also uses greedy decoding for the evaluation reported in the paper.
-
----
-
-## Citation
-
-```bibtex
-@inproceedings{anonymous2026puma,
-  title  = {{PUMA}: Prospective User-state Modeling for Action selection},
-  author = {Anonymous},
-  booktitle = {Submitted to NeurIPS 2026},
-  year   = {2026},
-  note   = {Under double-blind review}
-}
-```
-
-A non-anonymous citation will be added after the review period.
-
----
-
-## License
-
-Released under the MIT License (see `LICENSE`).
+The output contains aggregate metrics and per-profile trajectories, including stage lift,
+preparation rate, turn count, trigger coverage, and action distribution. The evaluator
+runs the PUMA counselor with the local patient simulator.

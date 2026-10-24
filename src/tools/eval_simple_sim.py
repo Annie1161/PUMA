@@ -1,17 +1,16 @@
 """
-Evaluate all counselor modes on the SimpleSimulator.
+Evaluate the PUMA counselor on SimpleSimulator.
 
-Reuses doctor_factory from interactive_cami_text_eval (FEP, CAMI, baselines).
-Environment is SimpleSimulator (MISC 17-class, talk-type sampling, per-profile thresholds).
+Uses the PUMA counselor from src/agent/counselor.py.
+Environment is SimpleSimulator (profile-grounded, LLM-driven patient simulation).
 Counselor utterances are classified into MISC 17-class to determine action.
 
 Usage:
     python eval_simple_sim.py \
-        --profiles_misc_path ../baseline/mi_coaching/CAMI/annotations/profiles_misc.jsonl \
+        --profiles_misc_path data/cami/profiles_misc.jsonl \
         --model Qwen/Qwen3-8B \
         --test_num 5 \
         --max_turns 20 \
-        --doctor_modes fep,cami_text,base_counselor,diir,cos,cami_full \
         --output_json logs/results/simple_sim_sub5.json
 """
 
@@ -29,12 +28,12 @@ import numpy as np
 
 # Add paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-FEP_DIR = os.path.join(SCRIPT_DIR, "..", "FEP-Agent")
-sys.path.insert(0, FEP_DIR)
+AGENT_DIR = os.path.join(SCRIPT_DIR, "..", "agent")
+sys.path.insert(0, AGENT_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
-from simple_simulator import _build_population_table, MISC_ACTIONS, STAGES
-from simple_simulator_v7 import SimpleSimulatorV7, build_population_action_dist, load_all_profiles
+from simulator_common import _build_population_table, MISC_ACTIONS, STAGES
+from simple_simulator import SimpleSimulator, build_population_action_dist, load_all_profiles
 from misc_annotator import CLASSIFY_SYSTEM_PROMPT, _parse_label
 
 
@@ -70,37 +69,6 @@ class MISCClassifier:
         raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
         raw = re.sub(r'</?think>', '', raw).strip()
         return _parse_label(raw)
-
-
-# ---------------------------------------------------------------------------
-# Patient response generator (based on talk_type)
-# ---------------------------------------------------------------------------
-
-_TALK_TYPE_TEMPLATES = {
-    "change": [
-        "I've been thinking about it, and maybe I should try to change.",
-        "You're right, it's affecting my life more than I thought.",
-        "I want to do something about this.",
-        "I can see how things could be better if I made some changes.",
-    ],
-    "neutral": [
-        "I see what you mean.",
-        "That's an interesting point.",
-        "I haven't really thought about it that way.",
-        "I guess so.",
-    ],
-    "sustain": [
-        "I don't think I need to change anything right now.",
-        "It's not that big of a deal, really.",
-        "I've tried before and it didn't work.",
-        "I'm fine the way things are.",
-    ],
-}
-
-
-def generate_patient_response(talk_type: str, rng: random.Random) -> str:
-    templates = _TALK_TYPE_TEMPLATES.get(talk_type, _TALK_TYPE_TEMPLATES["neutral"])
-    return rng.choice(templates)
 
 
 # ---------------------------------------------------------------------------
@@ -158,22 +126,19 @@ def run_eval(args):
 
     classifier = MISCClassifier(tokenizer, lm)
 
-    # Patch args for doctor_factory compatibility — must match all attrs
-    # used by FEPCounselor, Generator, Personas, Planner, QwenHFClient, etc.
+    # Populate shared counselor options — must match all attrs
+    # used by PUMACounselor, Generator, Personas, and Planner.
     _defaults = dict(
-        client="qwen_hf",
-        summary_model="default", persona_model="default",
-        generation_model="default", planner_model="default",
         max_input_length=4096, max_output_length=1024,
         persona_json_retry_max=2, cami_preparation_calibration=True,
         state_label_space="cami_stage", persona_state_space="cami_stage",
         state_predict_from_probs=True, observation_focused_state=True,
-        client_simulator_mode="dynamic", init_utterances=2,
+        init_utterances=2,
         usr_name="Client", agent_name="Counselor", log_step=5,
         relevance_memory_number=1, context_memory_number=12, dist_thres=1.5,
         memory_cache=None, ori_mem_query=False, memory_session_turn_gap=0,
         max_agent_personas=0, max_user_personas=0,
-        therapist_action_granularity="mi12",
+        therapist_action_granularity="misc17",
         persona_single_step=False, persona_history_max=6,
         persona_short_term_window_turns=4, persona_long_term_summary_turns=12,
         persona_therapist_action="",
@@ -184,24 +149,14 @@ def run_eval(args):
         sampling=False, sampling_step=10,
         sampling_path="logs/sampling", sampling_file_name="train.json",
         gpus="0",
-        annomi_jsonl_path="",
         dataset="cami",
-        data_path=os.path.join(FEP_DIR, "..", "baseline", "mi_coaching", "CAMI", "annotations"),
+        data_path=os.path.dirname(args.profiles_misc_path),
         data_name="profiles.jsonl",
         generation_out=False,
         next_state_eval_mode="auto",
         annomi_init_turns=8, cami_warmup_ratio=0.5, cami_min_eval_turns=3,
         obs_state_head_window_turns=0,
-        # Additional attrs needed by various modules
-        openai_base_url=None,
-        api_key="empty",
-        semantic_overlap=False,
-        semantic_model_name="all-MiniLM-L6-v2",
-        retriever_path="",
-        wikipedia_dir="",
-        profile_path="",
         fep_lambda_e=0.4, fep_lambda_p=0.6,
-        baseline_mode="fep",
         miti_behavior_scores=False,
         results_file="", log_file="",
         sample_ids="",
@@ -211,8 +166,7 @@ def run_eval(args):
             setattr(args, k, v)
     args.test_num_main = args.test_num
 
-    # Import doctor_factory after args are set (it uses args internally)
-    from interactive_cami_text_eval import doctor_factory, build_seed_history, normalize_stage
+    from counselor import PUMACounselor, build_seed_history
 
     # Load profiles & build population table
     profiles = load_profiles(args.profiles_misc_path, args.test_num)
@@ -222,7 +176,7 @@ def run_eval(args):
     logger.info("Loaded %d profiles (%d total), %d population cells",
                 len(profiles), len(all_profiles), len(pop_table))
 
-    modes = [m.strip() for m in args.doctor_modes.split(",")]
+    modes = ["puma"]
     logger.info("Modes: %s", modes)
 
     all_results = []
@@ -238,13 +192,13 @@ def run_eval(args):
             np.random.seed(run_seed % (2**31))
             torch.manual_seed(run_seed)
             torch.cuda.manual_seed_all(run_seed)
-            sim = SimpleSimulatorV7.from_profile(
+            sim = SimpleSimulator.from_profile(
                 profile, pop_table, pop_action_dist, tokenizer, lm,
             )
             seed_history = build_seed_history(profile, getattr(args, "init_utterances", 2))
 
             # Create doctor
-            doctor = doctor_factory(mode, args, logger, profile, pi)
+            doctor = PUMACounselor(args, logger, pi, seed_history, model=lm, tokenizer=tokenizer)
 
             # Initialize conversation
             patient_utt = seed_history[-1].replace("Client: ", "") if seed_history else "Hello."
@@ -259,20 +213,14 @@ def run_eval(args):
 
             for turn in range(args.max_turns):
                 # Doctor generates response
-                if mode == "fep":
-                    doctor_utt = doctor.reply(patient_utt)
-                else:
-                    doctor_utt = doctor.reply()
-
-                # Get doctor's explicit action label (if available)
-                explicit_action = getattr(doctor, "last_therapist_action", lambda: None)()
+                doctor_utt = doctor.reply(patient_utt)
 
                 # Classify utterance into MISC 17-class
                 context_str = "\n".join(conversation_context[-4:])
                 misc_action = classifier.classify(doctor_utt, context_str, sim.stage)
                 action_counts[misc_action] += 1
 
-                # Simulator step (v5: correct causal chain)
+                # Simulator step
                 patient_action, new_stage, done, info = sim.step(misc_action, doctor_utt, rng)
 
                 # Patient response from LLM
@@ -296,7 +244,7 @@ def run_eval(args):
                          summary["total_turns"],
                          " ".join(f"{a}={c}" for a, c in action_counts.most_common(3)))
 
-            # Free doctor model to avoid OOM on next profile
+            # Release per-profile state; the shared model stays loaded
             del doctor
             import gc; gc.collect()
             torch.cuda.empty_cache()
@@ -367,12 +315,11 @@ def run_eval(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--profiles_misc_path", type=str,
-                        default="../baseline/mi_coaching/CAMI/annotations/profiles_misc.jsonl")
+                        default="data/cami/profiles_misc.jsonl")
     parser.add_argument("--model", type=str, default="Qwen/Qwen3-8B")
     parser.add_argument("--test_num", type=int, default=5)
     parser.add_argument("--max_turns", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--doctor_modes", type=str, default="fep,cami_text,base_counselor,diir,cos,cami_full")
     parser.add_argument("--output_json", type=str, default="logs/results/simple_sim.json")
     # FEP ablation flags (override defaults in _defaults dict)
     parser.add_argument("--disable_planner", action="store_true", default=False,

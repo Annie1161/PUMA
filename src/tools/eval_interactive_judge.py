@@ -8,15 +8,14 @@ Following CAMI (Yang et al., ACL 2025) expert evaluation methodology:
     Cultivating Change Talk, Softening Sustain Talk, Partnership, Empathy, each 1–5
 
 Input: pre-generated conversation histories from eval_simple_sim.py
-       (ssim_v7_{mode}_n{N}.json files)
+       (simple_sim_{mode}_n{N}.json files)
 
 Judge: Qwen3-32B (4-bit), replacing human MI experts.
 
 Usage:
     python eval_interactive_judge.py \
         --results_dir logs/results \
-        --profiles_path ../baseline/mi_coaching/CAMI/annotations/profiles.jsonl \
-        --modes fep,diir,base_counselor,cami_text,cami_full,cos \
+        --profiles_path data/cami/profiles.jsonl \
         --test_num 5 \
         --judge_model Qwen/Qwen3-32B \
         --load_in_4bit \
@@ -338,11 +337,9 @@ def main():
     parser.add_argument("--results_dir", type=str,
                         default="logs/results")
     parser.add_argument("--profiles_path", type=str,
-                        default="../baseline/mi_coaching/CAMI/annotations/profiles.jsonl")
-    parser.add_argument("--modes", type=str,
-                        default="fep,diir,base_counselor,cami_text,cami_full,cos")
+                        default="data/cami/profiles.jsonl")
     parser.add_argument("--results_suffix", type=str, default="n29",
-                        help="Suffix of result files: ssim_v7_{mode}_{suffix}.json")
+                        help="Suffix of result files: simple_sim_{mode}_{suffix}.json")
     parser.add_argument("--test_num", type=int, default=0,
                         help="Number of profiles to evaluate (0=all)")
     parser.add_argument("--judge_model", type=str, default="Qwen/Qwen3-32B")
@@ -377,10 +374,10 @@ def main():
         real_transitions_by_idx[idx] = first_trans
 
     # Load results for each mode
-    modes = [m.strip() for m in args.modes.split(",")]
+    modes = ["puma"]
     mode_data = {}  # mode -> list of per-profile dicts
     for mode in modes:
-        fname = f"ssim_v7_{mode}_{args.results_suffix}.json"
+        fname = f"simple_sim_{mode}_{args.results_suffix}.json"
         fpath = os.path.join(args.results_dir, fname)
         if not os.path.exists(fpath):
             logger.warning("Missing: %s", fpath)

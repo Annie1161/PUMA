@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, Sequence
 from Module.prompts import build_planner_sys, format_planner_user
 
 from Module.Personas import MI_LATENT_KEYS, CAMI_STAGE_TYPES, PATIENT_CLIENT_TALK_TYPES
-from tools.therapist_action import normalize_therapist_action
+from tools.persona_machine_json import normalize_therapist_action
 
 
 def _strip_model_noise(text: str) -> str:
