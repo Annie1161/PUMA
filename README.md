@@ -37,10 +37,11 @@
 
 ## Motivation
 
-A dialogue system can observe what a user says, but an utterance alone does not
-fully reveal the user's internal state. Uncertainty, engagement, and readiness to
-act may shape what the user means while remaining implicit in their words.
-The same utterance can therefore call for different responses.
+A dialogue system can observe what a user says, but those words alone do not fully
+reveal the user's current internal state. Many hidden factors, including uncertainty,
+engagement, and readiness to act, can shape the meaning a user intends to convey
+without being explicitly expressed. The same utterance may therefore call for
+different responses depending on the user's state.
 
 Consider the same observation: **“I've been taking the new medication for two weeks.”**
 
@@ -52,13 +53,14 @@ Consider the same observation: **“I've been taking the new medication for two 
 
 *Illustrative interpretations adapted from the manuscript's motivating example.*
 
-Selecting an appropriate response therefore requires inferring the user's current
-state from the dialogue history and current utterance. It also requires anticipating
-how the response itself may affect the user's subsequent state. **PUMA connects
-these two tasks through a user world model:** it maintains and updates a belief over
-the user's state, predicts how that state may evolve under candidate dialogue actions,
-and selects an action that balances uncertainty reduction with progress toward the
-dialogue goal. The selected action then guides response generation.
+To understand the user and respond appropriately, a dialogue system needs to infer
+the user's state from the conversation history and current utterance. It can then
+anticipate how alternative responses may affect the user's subsequent state and use
+these predicted consequences to guide action selection. **PUMA connects state
+inference and action selection through a user world model:** it maintains and updates
+a belief distribution over user states, predicts state changes under candidate
+dialogue actions, and selects an action that balances uncertainty reduction with
+progress toward the dialogue goal. The selected action then guides response generation.
 
 ## Overview
 
