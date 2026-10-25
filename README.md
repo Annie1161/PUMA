@@ -5,6 +5,8 @@
   User World Modeling for LLM Personalization in Multi-Turn Conversation
 </h3>
 
+<p align="center"><strong>Accepted at NeurIPS 2026</strong></p>
+
 <p align="center">
   <strong>Prospective User World Modeling for Action Selection</strong><br>
   Understand the hidden state. Anticipate the next turn. Choose how to respond.

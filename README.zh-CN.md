@@ -5,6 +5,8 @@
   User World Modeling for LLM Personalization in Multi-Turn Conversation
 </h3>
 
+<p align="center"><strong>已被 NeurIPS 2026 接收</strong></p>
+
 <p align="center">
   <strong>面向动作选择的前瞻性用户世界建模</strong><br>
   理解潜在状态，预判交互走向，再决定如何回应。
