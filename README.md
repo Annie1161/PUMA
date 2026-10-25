@@ -37,10 +37,10 @@
 
 ## Motivation
 
-An utterance provides only a partial observation of a user's underlying state.
-Factors such as uncertainty, engagement, and readiness to act influence what the
-user means, but may remain implicit in what they say. As a result, the same
-utterance can reflect different states and call for different response strategies.
+A dialogue system can observe what a user says, but an utterance alone does not
+fully reveal the user's internal state. Uncertainty, engagement, and readiness to
+act may shape what the user means while remaining implicit in their words.
+The same utterance can therefore call for different responses.
 
 Consider the same observation: **“I've been taking the new medication for two weeks.”**
 
