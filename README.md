@@ -37,9 +37,10 @@
 
 ## Motivation
 
-What a user says is observable; their uncertainty, engagement, and readiness to act
-are often only partly expressed. Treating an utterance as a direct readout of the
-user's state can therefore lead to a response that fits the words but misses the person.
+An utterance provides only a partial observation of a user's underlying state.
+Factors such as uncertainty, engagement, and readiness to act influence what the
+user means, but may remain implicit in what they say. As a result, the same
+utterance can reflect different states and call for different response strategies.
 
 Consider the same observation: **“I've been taking the new medication for two weeks.”**
 
@@ -51,11 +52,13 @@ Consider the same observation: **“I've been taking the new medication for two 
 
 *Illustrative interpretations adapted from the manuscript's motivating example.*
 
-The utterance alone cannot determine which interpretation is appropriate. Dialogue
-history and new observations provide evidence, while a clarifying question can help
-reduce uncertainty. **PUMA addresses this ambiguity by connecting state inference
-with action selection:** it tracks possible user states and anticipates the effects
-of candidate dialogue actions before generating a response.
+Selecting an appropriate response therefore requires inferring the user's current
+state from the dialogue history and current utterance. It also requires anticipating
+how the response itself may affect the user's subsequent state. **PUMA connects
+these two tasks through a user world model:** it maintains and updates a belief over
+the user's state, predicts how that state may evolve under candidate dialogue actions,
+and selects an action that balances uncertainty reduction with progress toward the
+dialogue goal. The selected action then guides response generation.
 
 ## Overview
 
