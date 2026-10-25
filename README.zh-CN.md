@@ -1,34 +1,116 @@
-# PUMA：面向动作选择的前瞻性用户状态建模
+<h1 align="center">PUMA</h1>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-项目地址：https://github.com/Annie1161/PUMA
+<h3 align="center">
+  Know You Before You Speak:<br>
+  User World Modeling for LLM Personalization in Multi-Turn Conversation
+</h3>
 
-## 一、项目介绍
+<p align="center">
+  <strong>面向动作选择的前瞻性用户世界建模</strong><br>
+  理解潜在状态，预判交互走向，再决定如何回应。
+</p>
 
-PUMA 是面向动机式访谈（Motivational Interviewing，MI）对话的研究框架。
-它根据对话和用户画像推断用户当前的改变准备度，预测不同咨询动作可能带来的状态变化，
-并通过期望自由能（Expected Free Energy，EFE）指导动作选择。
+<p align="center">
+  <a href="https://github.com/Annie1161/PUMA"><img src="assets/badge-code.svg" alt="PUMA 代码"></a>
+  <a href="LICENSE"><img src="assets/badge-license.svg" alt="MIT 许可证"></a>
+  <a href="README.md"><img src="assets/badge-docs.svg" alt="English documentation"></a>
+</p>
 
-系统将状态推断、动作规划和回复生成划分为独立模块，并通过对话记忆维护跨轮次信息。
-每轮对话的基本流程为：
+<p align="center">
+  <a href="README.md">English</a> | <strong>简体中文</strong>
+</p>
 
-1. 根据用户画像和近期对话推断潜在状态的后验分布。
-2. 使用转移模型预测候选咨询动作对后续状态的影响。
-3. 通过 EFE 评分选择动作，并生成自然语言回复。
-4. 更新对话记忆，将状态信息传递到下一轮。
+<p align="center">
+  <a href="#一研究动机">研究动机</a> ·
+  <a href="#二方法概览">方法概览</a> ·
+  <a href="#三实验结果">实验结果</a> ·
+  <a href="#四安装与模型配置">安装配置</a> ·
+  <a href="#五数据准备">数据准备</a> ·
+  <a href="#六离线状态评估">离线评估</a> ·
+  <a href="#七交互式动态评估">动态评估</a>
+</p>
 
-准备度状态包括：前意向期（precontemplation）、意向期（contemplation）、
-准备期（preparation）。离线评估还支持 neutral、change、sustain 三类言语标签。
-观测聚焦推断和规划先验融合均可配置，实验时应明确指定相关参数。
+> **同一句话，在不同用户状态下，可能具有不同的含义。**
+> 观测（observation）本身不能唯一、准确地揭示用户的真实状态。PUMA 持续维护对潜在状态的信念，
+> 并通过用户世界模型预测不同回复可能带来的后续变化。
 
-## 二、主要功能
+## 一、研究动机
 
-PUMA 智能体：用户画像建模、状态推断、转移规划、回复生成和对话记忆。
-患者模拟器：基于画像生成回复，支持语义触发匹配和个体化动作分布。
-评估工具：离线状态预测、多轮对话和模型裁判评估。
-行为标注工具：MISC 咨询动作分类及数据标注。
+我们能直接看到用户说了什么，却往往无法直接看到其不确定感、投入程度和行动准备度。
+这些潜在因素只会部分地体现在语言中。如果将话语直接等同于真实状态，
+系统就可能给出字面上相关、却没有回应用户实际处境的回复。
 
-## 三、环境准备
+例如，用户说的都是：**“我已经服用这个新药两周了。”**
+
+| 可能的潜在状态 | 这句话可能传达的含义 | 回复需要进一步了解什么 |
+| --- | --- | --- |
+| 担忧副作用 | “我对自己的感受有些不安，希望获得回应。” | 邀请用户表达具体顾虑。 |
+| 有信心，正在记录进展 | “我在向你更新最近的情况。” | 询问进展和使用体验。 |
+| 对是否继续感到犹豫 | “我正在重新考虑是否继续。” | 澄清犹豫的原因和用户的意图。 |
+
+*以上为根据论文动机示例整理的可能解释。*
+
+仅凭这句话，系统无法确定哪一种解释更合适。历史对话和新的观测提供推断依据，
+进一步提问也可以帮助降低不确定性。**PUMA 正是为解决这种歧义而设计：将状态推断与动作选择连接起来，
+跟踪可能的用户状态，并在生成回复前预测不同对话动作的后果。**
+
+## 二、方法概览
+
+PUMA 以自由能原理（Free Energy Principle，FEP）为基础，
+将个性化对话建模为面向**部分可观测、持续变化的用户**的序贯决策。
+用户世界模型将潜在状态、可观测话语和由系统动作影响的状态转移联系起来。
+
+<p align="center">
+  <a href="assets/puma-framework.png"><img src="assets/puma-framework.png" width="100%" alt="PUMA 方法框架：用户状态信念与世界模型、期望自由能动作选择、回复生成"></a>
+</p>
+
+<p align="center"><sub>从观察用户话语，到理解可能的潜在状态，再预判后续交互。</sub></p>
+
+| 组成部分 | 在交互中的作用 |
+| --- | --- |
+| **状态信念** `q(s)` | 维护用户当前可能处于哪些状态及其概率，并随新证据更新。 |
+| **观测模型** `p(o \| s)` | 描述不同潜在状态可能如何表达为可观测的话语。 |
+| **转移模型** `p(s′ \| s, a)` | 预测候选系统动作可能如何改变用户状态。 |
+| **前瞻性动作选择** | 近似计算期望自由能（EFE），平衡降低不确定性与推动目标进展。 |
+| **记忆与回复生成** | 结合用户上下文，将选定动作转化为自然语言回复。 |
+
+每轮交互形成一个循环：**观测话语 → 更新状态信念与世界模型 → 评估候选动作 → 生成回复 → 接收新观测**。
+状态信念始终是可以随证据修正的估计。
+
+当前实现将这一框架用于动机式访谈（Motivational Interviewing，MI），
+以**前意向期 → 意向期 → 准备期**表示改变准备度。
+离线评估还支持 **neutral / change / sustain** 言语标签。
+世界模型的更新通过交互中的 LLM 推理维护结构化观测规则和转移规则；当前提供的是推理与评估流程。
+
+## 三、实验结果
+
+配套论文分别通过固定对话评估状态跟踪能力，通过基于画像的患者模拟器评估多轮交互表现。
+以下图表和数值均来自该论文。
+
+<table>
+  <tr>
+    <td align="center" width="50%"><strong>跟踪潜在状态</strong></td>
+    <td align="center" width="50%"><strong>预判用户变化</strong></td>
+  </tr>
+  <tr>
+    <td><a href="assets/state-prediction.png"><img src="assets/state-prediction.png" width="100%" alt="不同对话阶段的下一状态预测准确率：PUMA soft fusion 与长提示词方法"></a></td>
+    <td><a href="assets/readiness-progression.png"><img src="assets/readiness-progression.png" width="100%" alt="CAMI 模拟交互中 PUMA 与对比方法的准备度变化曲线"></a></td>
+  </tr>
+</table>
+
+左图展示不同对话阶段的下一状态预测准确率；右图展示 CAMI 模拟交互中的准备度变化。
+右图原始图例中的 **FEP (Ours)** 对应 PUMA。
+
+| 基座模型 | 状态提升 ↑ | 到达准备期比例 ↑ | 触发条件覆盖率 ↑ | 平均轮数 ↓ |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 1.62 | 75.9% | 62.4% | 12.2 |
+| Llama-3.1-8B | 1.76 | 83.0% | 63.2% | 10.7 |
+
+*论文所报告的 PUMA 结果，评估范围为其 CAMI 患者模拟器协议。*
+
+## 四、安装与模型配置
+
+### 准备环境
 
 以下命令适用于 Bash，后续示例均从项目根目录执行。
 
@@ -65,7 +147,7 @@ python -m spacy download en_core_web_sm
 export PYTHONPATH="$PWD/src:$PWD/src/agent${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-## 四、模型配置
+### 选择本地模型
 
 所有模型调用均使用本地 Hugging Face 模型。通过 --model 指定模型名称或本地模型目录。
 智能体默认模型为 Qwen/Qwen3-0.6B，动态评估默认模型为 Qwen/Qwen3-8B。
@@ -112,9 +194,10 @@ python src/agent/main.py \
     --results_file logs/results/puma_static.json
 ```
 
-## 七、使用患者模拟器进行动态评估
+## 七、交互式动态评估
 
-对 5 个画像执行多轮咨询，每个画像最多运行 20 轮：
+对 5 个画像执行多轮咨询，每个画像最多运行 20 轮。示例显式开启 EFE 动作选择，
+并通过 soft fusion 融合观测推断结果与规划器预测的状态先验：
 
 ```bash
 python src/tools/eval_simple_sim.py \
@@ -123,6 +206,7 @@ python src/tools/eval_simple_sim.py \
     --test_num 5 \
     --max_turns 20 \
     --seed 42 \
+    --fep_efe_action True \
     --prior_fusion_mode soft_fusion \
     --output_json logs/results/simple_sim_puma_n5.json
 ```

@@ -1,43 +1,124 @@
-# PUMA: Prospective User-state Modeling for Action Selection
+<h1 align="center">PUMA</h1>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<h3 align="center">
+  Know You Before You Speak:<br>
+  User World Modeling for LLM Personalization in Multi-Turn Conversation
+</h3>
 
-PUMA is a research framework for motivational interviewing (MI) dialogues. It models a
-client's readiness to change, predicts how that state may evolve under different counselor
-actions, and uses expected free energy (EFE) to guide action selection.
+<p align="center">
+  <strong>Prospective User World Modeling for Action Selection</strong><br>
+  Understand the hidden state. Anticipate the next turn. Choose how to respond.
+</p>
 
-The implementation separates **state inference**, **action planning**, and **response
-generation**, with dialogue memory shared across turns. It includes a profile-grounded
-patient simulator and tools for evaluating both state predictions and counseling rollouts.
+<p align="center">
+  <a href="https://github.com/Annie1161/PUMA"><img src="assets/badge-code.svg" alt="PUMA code"></a>
+  <a href="LICENSE"><img src="assets/badge-license.svg" alt="MIT License"></a>
+  <a href="README.zh-CN.md"><img src="assets/badge-docs.svg" alt="简体中文文档"></a>
+</p>
 
-[Getting started](#getting-started) · [Data](#data) · [Evaluation](#evaluation)
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="#motivation">Motivation</a> ·
+  <a href="#overview">Overview</a> ·
+  <a href="#results">Results</a> ·
+  <a href="#installation">Installation</a> ·
+  <a href="#data">Data</a> ·
+  <a href="#offline-evaluation">Offline evaluation</a> ·
+  <a href="#interactive-evaluation">Interactive evaluation</a>
+</p>
+
+> **The same words can carry different meanings in different user states.**
+> An observation alone does not uniquely reveal the user's true state. PUMA maintains
+> a belief over that hidden state and uses a user world model to reason about how
+> different responses may shape what happens next.
+
+## Motivation
+
+What a user says is observable; their uncertainty, engagement, and readiness to act
+are often only partly expressed. Treating an utterance as a direct readout of the
+user's state can therefore lead to a response that fits the words but misses the person.
+
+Consider the same observation: **“I've been taking the new medication for two weeks.”**
+
+| Possible hidden state | What the utterance might mean | What the response should explore |
+| --- | --- | --- |
+| Anxious about side effects | “I need reassurance about what I am experiencing.” | Invite the user to share their concerns. |
+| Confidently tracking progress | “I am updating you on how things are going.” | Ask about progress and the user's experience. |
+| Unsure about continuing | “I am reconsidering whether to keep going.” | Clarify the hesitation and the user's intentions. |
+
+*Illustrative interpretations adapted from the manuscript's motivating example.*
+
+The utterance alone cannot determine which interpretation is appropriate. Dialogue
+history and new observations provide evidence, while a clarifying question can help
+reduce uncertainty. **PUMA addresses this ambiguity by connecting state inference
+with action selection:** it tracks possible user states and anticipates the effects
+of candidate dialogue actions before generating a response.
 
 ## Overview
 
-At each dialogue turn, PUMA:
+Grounded in the Free Energy Principle (FEP), PUMA treats personalization as
+decision-making over a **partially observable, evolving user**. Its user world model
+connects latent states, observable utterances, and state transitions conditioned on
+system actions.
 
-1. Infers a posterior over the client's latent state from the dialogue and persona context.
-2. Uses a transition model to predict the effects of candidate counselor actions.
-3. Selects an action through EFE scoring and generates a natural-language response.
-4. Updates its memory and carries state information into the next turn.
+<p align="center">
+  <a href="assets/puma-framework.png"><img src="assets/puma-framework.png" width="100%" alt="PUMA framework: user-state belief and world model, expected-free-energy action selection, and response generation"></a>
+</p>
 
-The readiness-stage vocabulary is **precontemplation → contemplation → preparation**.
-The offline evaluator also supports MI talk-type labels: **neutral**, **change**, and
-**sustain**. Observation-focused inference and fusion with the planner prior are configurable;
-select them explicitly when comparing experimental settings.
+<p align="center"><sub>From observing an utterance to understanding possible states and anticipating future interaction.</sub></p>
 
-The repository includes:
+| Component | Role in the interaction |
+| --- | --- |
+| **State belief** `q(s)` | Maintain uncertainty over the user's current hidden state, updating it as dialogue evidence arrives. |
+| **Observation model** `p(o \| s)` | Represent how a latent state may be expressed in an observable utterance. |
+| **Transition model** `p(s′ \| s, a)` | Predict how a candidate system action may change the user's state. |
+| **Prospective action selection** | Approximate expected free energy (EFE) to balance uncertainty reduction and goal-directed outcomes. |
+| **Memory and generation** | Ground the selected action in user context and realize it as a natural-language response. |
 
-- **PUMA agent:** persona modeling, transition planning, response generation, and memory.
-- **Patient simulator:** profile-grounded responses, semantic trigger matching, and
-  per-profile action distributions.
-- **Evaluation tools:** offline state evaluation, interactive counseling rollouts, and
-  model-based judging.
-- **Behavior annotation:** MISC counselor-action labels and annotation tools.
+The interaction follows a repeated cycle: **observe → update the state belief and
+world model → evaluate candidate actions → respond → observe again**. The belief
+remains an estimate that can be revised as new evidence arrives.
 
-## Getting started
+The current implementation instantiates this framework in motivational interviewing
+(MI), using **precontemplation → contemplation → preparation** as readiness states.
+Offline evaluation also supports **neutral / change / sustain** talk-type labels.
+World-model refinement updates structured observation and transition rules through
+LLM inference during interaction; the supplied workflows run inference and evaluation.
 
-### 1. Set up the project
+## Results
+
+The accompanying manuscript evaluates state tracking on fixed transcripts and
+long-horizon interaction with a profile-grounded patient simulator. The figures and
+values below are reported in that manuscript.
+
+<table>
+  <tr>
+    <td align="center" width="50%"><strong>Tracking the hidden state</strong></td>
+    <td align="center" width="50%"><strong>Anticipating user evolution</strong></td>
+  </tr>
+  <tr>
+    <td><a href="assets/state-prediction.png"><img src="assets/state-prediction.png" width="100%" alt="Next-state prediction accuracy across dialogue turns: PUMA soft fusion and a long-prompt comparator"></a></td>
+    <td><a href="assets/readiness-progression.png"><img src="assets/readiness-progression.png" width="100%" alt="Simulated readiness progression across dialogue turns for PUMA and comparison methods"></a></td>
+  </tr>
+</table>
+
+The left figure shows next-state prediction across dialogue stages. The right figure
+shows readiness progression in CAMI simulator rollouts; **FEP (Ours)** denotes PUMA
+in the original figure legend.
+
+| Backbone | Stage lift ↑ | Preparation rate ↑ | Trigger coverage ↑ | Average turns ↓ |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 1.62 | 75.9% | 62.4% | 12.2 |
+| Llama-3.1-8B | 1.76 | 83.0% | 63.2% | 10.7 |
+
+*PUMA results reported under the manuscript's CAMI patient-simulator protocol.*
+
+## Installation
+
+### Set up the environment
 
 ```bash
 git clone https://github.com/Annie1161/PUMA.git
@@ -72,7 +153,7 @@ entry points importable in the current shell:
 export PYTHONPATH="$PWD/src:$PWD/src/agent${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-### 2. Choose a local model
+### Choose a local model
 
 Inference uses a local Hugging Face causal language model. Pass `--model` with a
 model identifier or an existing local model directory. The agent defaults to
@@ -103,14 +184,10 @@ Provide prepared transcripts and annotated profile files in the formats above.
 
 Pass data paths and evaluation settings explicitly through CLI arguments.
 
-## Evaluation
+## Offline evaluation
 
-These examples assume the model environment and data above are available. Start with a
-small profile count before running a full evaluation.
-
-### Offline state evaluation
-
-Evaluate state predictions against a fixed CAMI transcript:
+Once the model environment and data are available, evaluate state predictions against
+a fixed CAMI transcript. Start with a small profile count:
 
 ```bash
 python src/agent/main.py \
@@ -126,9 +203,11 @@ python src/agent/main.py \
     --results_file logs/results/puma_static.json
 ```
 
-### Dynamic rollout with patient simulator
+## Interactive evaluation
 
-Run counseling rollouts with a maximum of 20 turns per profile:
+Run counseling rollouts for five profiles with a maximum of 20 turns per profile.
+This example explicitly enables EFE action selection and soft fusion of the
+observation-based estimate with the planner's predicted prior:
 
 ```bash
 python src/tools/eval_simple_sim.py \
@@ -137,6 +216,7 @@ python src/tools/eval_simple_sim.py \
     --test_num 5 \
     --max_turns 20 \
     --seed 42 \
+    --fep_efe_action True \
     --prior_fusion_mode soft_fusion \
     --output_json logs/results/simple_sim_puma_n5.json
 ```
